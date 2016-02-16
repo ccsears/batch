@@ -1,0 +1,99 @@
+ackage gad.interfaces.utils;
+
+import java.util.Iterator;
+import java.util.List;
+
+import org.jdom.Document;
+import org.jdom.Element;
+import org.jdom.output.Format;
+import org.jdom.output.XMLOutputter;
+
+/**
+ * Find the requested child node in an XML document by calling this class many times to traverse the document
+ * one level at a time.  You need to know the heirarchy of the document to perform the calls in order.
+ * This approach ensures that the XML structure does not change, and if it does, an error is created and a
+ * coding change is required.
+ *
+ *  <br>
+ * @author csears@us.ibm.com
+ */
+public class XMLUtility {
+	protected Element eGotIt = null;
+
+	/**
+	 * Instantiate method.
+	 */
+	public XMLUtility() {
+		super();
+		// TODO Auto-generated constructor stub
+	}
+	
+	/**
+	 * Recursive search to find the requested element on the current node.
+	 * <br>
+	 * @param current  - Current Element
+	 * @param target   - Requested Element
+	 */
+	public void findChild(Element current, String target) {
+		// set to null for case that target is not found
+		eGotIt = null;
+		
+//	System.out.println(current.getName());
+		List children = current.getChildren();
+		Iterator iterator = children.iterator();
+		while (iterator.hasNext()) {
+			Element child = (Element) iterator.next();
+			if (child.getName().equals(target)) {
+//	    System.out.println("BANG " + child.getName());
+				eGotIt = child;
+				break;
+			} else {
+				findChild(child, target);
+			}
+	  }
+	}
+	
+	/**
+	 * Returns the current element. <br>
+	 * Perform null check to avoid npe error.
+	 * <br>
+	 * @return Element - null if not found
+	 */
+	public Element getElement() {
+		return eGotIt;
+	}
+	
+	/**
+	 * Returns fomatted xml for the supplied document. <br>
+	 *
+	 * @param xmlMsgDoc
+	 * @return Formatted document
+	 */
+	public String toString(Document xmlMsgDoc) {
+		XMLOutputter xmlFormatter;
+		xmlFormatter = new XMLOutputter();
+		xmlFormatter.setFormat(Format.getPrettyFormat());
+
+		return xmlFormatter.outputString(xmlMsgDoc);
+	}
+	
+	/**
+	 * Returns fomatted xml for the supplied element.
+	 * <br>
+	 * @param xmlMsgElement
+	 * @return Formatted element
+	 */
+	public String toString(Element xmlMsgElement) {
+		XMLOutputter xmlFormatter;
+//	Format format = Format.getRawFormat();
+//	format.setIndent(" ");
+//	format.setLineSeparator("\n");
+//	XMLOutPutter xmlOut = new XMLOutPutter(format);
+// or xmlFormatter.setFormat(Format.getPrettyFormat().setOmitDeclaration(true));
+	
+		xmlFormatter = new XMLOutputter();
+		xmlFormatter.setFormat(Format.getPrettyFormat());
+
+		return xmlFormatter.outputString(xmlMsgElement);
+	}
+}

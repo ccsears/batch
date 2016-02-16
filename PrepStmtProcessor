@@ -1,0 +1,424 @@
+package gad.services.prepstmtprocessor;
+
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
+import java.sql.Types;
+import java.text.NumberFormat;
+import java.util.Enumeration;
+import java.util.Iterator;
+import java.util.List;
+import java.util.StringTokenizer;
+import java.util.Vector;
+
+import org.jdom.Element;
+
+import gad.batch.framework.v01.BatchException;
+import gad.siebel.core.SiebelEAIInbound;
+
+/**
+ * TODO JavaDoc Needed
+ * 
+ * @author csears@us.ibm.com
+ */
+public class PrepStmtProcessor extends SiebelEAIInbound{
+	protected String litFileForHtmlRpt = "HTML REPORT";
+	protected int rowCnt = 0;
+	protected int noRowCnt = 0;
+	protected int qMarkCount = 0;
+	protected int shortCnt = 0;
+	private boolean bFooter = false;
+	private boolean bStarted = false;
+	private SqlRecord sqlRec = new SqlRecord();
+
+	/**
+	 * @throws BatchException
+	 * 
+	 */
+	public PrepStmtProcessor(String batchname) throws BatchException {
+		super(batchname);
+		// TODO Auto-generated constructor stub
+	}
+
+	/* (non-Javadoc)
+	 * @see gad.siebel.core.SiebelEAIInbound#finalizeProgram()
+	 */
+	public int finalizeProgram() {
+		int inputCount = ((FileRecord) lFile.get(getFileIndex(lFile, litInputFile))).recordCounter;
+	  int errorCount = getFileCnt(litErrorFile);
+		NumberFormat nf = NumberFormat.getInstance();
+		
+		if (sqlRec.printResultSet) {
+			writeFileRec(litFileForHtmlRpt, html.endTable());
+		}
+		
+		batchreport.writeDetailRec("Table has " + nf.format(rowCnt) + " Rows Output.");
+		writeFileRec(litFileForHtmlRpt, html.paragraph("default", nf.format(rowCnt) + " Rows Output"));
+		writeFileRec(litFileForHtmlRpt, html.paragraph("default", nf.format(inputCount) + " Rows Input"));
+		writeFileRec(litFileForHtmlRpt, html.paragraph("default", nf.format(noRowCnt) + " Rows Not Found"));
+		String color = shortCnt == 0 ? "grey" : "orange";
+  	writeFileRec(litFileForHtmlRpt,html.paragraph(color, nf.format(shortCnt) + " Records with more fields than placeholders"));
+  	color = errorCount == 0 ? "grey" : "red";
+    writeFileRec(litFileForHtmlRpt,html.paragraph(color, nf.format(errorCount) + " Error Records"));
+		
+		if (bFooter) {
+			writeFileRec(litFileForHtmlRpt, html.paragraph(4,"blue","      "));
+			writeFileRec(litFileForHtmlRpt, html.paragraph(6,"green","====== End of Report ========="));
+		}
+		writeFileRec(litFileForHtmlRpt, html.horizontalLine());
+		writeFileRec(litFileForHtmlRpt, html.endDoc());
+
+		return 0;
+	}
+
+	/* (non-Javadoc)
+	 * @see gad.siebel.core.SiebelEAIInbound#formatRec()
+	 */
+	public int formatRec() throws BatchException {
+		// Parse the line read from the input file
+		StringTokenizer tokens = new StringTokenizer(line, sqlRec.delimiter);
+		int tokenCnt = tokens.countTokens();
+		int rc =0;
+		
+		String doubleDelimiter =  sqlRec.delimiter + sqlRec.delimiter;
+		if (line.indexOf(doubleDelimiter) != -1) {
+			batchreport.writeDetailRec("Record has missing column (double delimiter):  " + line);
+			return -1;
+		}
+		
+		if (qMarkCount < tokenCnt) {  // allows for extra vales in the inbound file
+			shortCnt++;
+			String value[] = new String[qMarkCount];
+			for (int j=0; j<qMarkCount; j++) {
+				value[j] = tokens.nextToken();
+			}
+			rc = performOperation(value);
+		} else {
+			int i = 0;
+			String value[] = new String[tokenCnt];
+			while (tokens.hasMoreTokens()) {
+				value[i] = tokens.nextToken();
+				i++;
+			}
+			rc = performOperation(value);
+		}
+
+		return rc;
+	}
+	
+	/* (non-Javadoc)
+	 * @see gad.siebel.core.SiebelEAIInbound#formatRec()
+	 */
+	private int performOperation(String[] value) throws BatchException {
+		// Perform the defined operation on the input values   
+		try {
+			if (sqlRec.executeQuery) {
+				int rc = executePrepStmtUpdate(setPrepStmtValues(litSiebelDb,0,value));
+				if (rc == 0) {
+					noRowCnt++;
+				} else {
+					rowCnt = rc + rowCnt;
+				}
+			} else 
+			if (sqlRec.printResultSet) {
+				ResultSet rs = executePrepStmtQuery(setPrepStmtValues(litSiebelDb,0,value));
+				printResultSet(rs);
+			} else 
+			if (sqlRec.fileResultSet) {
+				ResultSet rs = executePrepStmtQuery(setPrepStmtValues(litSiebelDb,0,value));
+				fileResultSet(rs, sqlRec.logicalName, sqlRec.delimiter);
+			}
+		} catch (SQLException e ) {
+			batchreport.writeDetailRec("SQLException");
+			batchreport.writeDetailRec("SQLState  "+ e.getSQLState() );
+			batchreport.writeDetailRec("Message  " + e.getMessage());
+			batchreport.writeDetailRec("Vendor  " + e.getErrorCode());
+			batchreport.writeDetailRec("Offending record:  " + line);
+			return -1;
+		} catch (Exception e) {
+			e.printStackTrace();
+			return -1;
+		}
+		 return 0;
+	}
+	/* (non-Javadoc)
+	 * @see gad.siebel.core.SiebelEAIInbound#initProgram()
+	 */
+	public int initProgram() {
+		int rc = definePreparedStmt();
+		
+		writeFileRec(litFileForHtmlRpt, html.heading1(sqlRec.logicalName));
+		
+		return rc;
+	}
+	/* (non-Javadoc)
+	 * @see gad.siebel.core.SiebelEAIInbound#initProgram()
+	 */	
+	public int definePreparedStmt() {
+		String statement[] = new String[1];
+		
+		Iterator i = lSql.iterator();
+		while(i.hasNext()){
+			sqlRec = (SqlRecord) i.next();
+			batchreport.writeDetailRec("------------------------ QUERY "+ sqlRec.logicalName +
+					" --------------------------------");
+			batchreport.writeDetailRec(sqlRec.sql);
+			batchreport.writeDetailRec("---------------------- END QUERY "+ sqlRec.logicalName +
+					" ------------------------------");
+			//-----------------------------------		
+			//Define SQL commands
+			//-----------------------------------		
+			statement[0] = sqlRec.sql;
+			StringTokenizer qMark = new StringTokenizer(sqlRec.sql, "?");
+			qMarkCount = qMark.countTokens() - 1;
+		}
+		
+		try {
+			setPrepStmt(litSiebelDb, statement);
+		} catch (SQLException e){
+			batchreport.writeDetailRec("*** E R R O R *** In definePreparedStmt" + e.toString());
+			e.printStackTrace();
+			return -1;			
+		} catch (Exception ex){
+			batchreport.writeDetailRec("*** E R R O R *** In definePreparedStmt" + ex.toString());
+			ex.printStackTrace();
+			return -1;
+		}
+		
+		return 0;
+	}
+	/* (non-Javadoc)
+	 * @see gad.siebel.core.SiebelEAIInbound#loadXmlTemplate()
+	 */
+	public int loadXmlTemplate() {
+		// TODO Auto-generated method stub
+		return 0;
+	}
+	/* (non-Javadoc)
+	 * @see gad.siebel.core.SiebelEAIInbound#releaseProgramResources()
+	 */
+	protected int releaseProgramResources() {
+		// TODO Auto-generated method stub
+		return 0;
+	}
+	/* (non-Javadoc)
+	 * @see gad.siebel.core.SiebelEAIInbound#setProgramOverrides()
+	 */
+	public int setProgramOverrides() {
+		
+		try {
+			Element rootElement = xmlConfigDoc.getRootElement();
+			//------------------------------------------------
+			// Find the type of report to create
+			//------------------------------------------------
+			Element eProgramGroup = rootElement.getChild("PROGRAMGroup");
+			List lProgramGroup = eProgramGroup.getChildren();
+
+			Iterator i = lProgramGroup.iterator();
+			while (i.hasNext()) {
+				Element e = (Element) i.next();
+				if (e.getName().equals("SqlProcessor")) {
+					parseProgramOverrides(rootElement);
+				}
+			}			
+		} catch (Exception e) {
+			System.out.println("**** E R R O R ***** parsing PROGRAMGroup Tag");
+			e.printStackTrace();
+			return -1;
+		}
+		return 0;
+	}
+	/*
+	 * Insert the method's description here.
+	 * Creation date: (4/14/2004 4:25:49 PM)
+	 */
+	private void parseProgramOverrides(Element rootElement) throws Exception {
+
+		try{
+			//------------------------------------------------
+			// Loop thru child elements from Action
+			//------------------------------------------------
+			Element eAction = rootElement.getChild("PROGRAMGroup").getChild("SqlProcessor");
+			List lSqlProcessorChildren = eAction.getChildren();
+			Iterator i = lSqlProcessorChildren.iterator();
+			while (i.hasNext()){
+				Element e = (Element) i.next();
+				if(e.getName().equals("ReportHeader")) {
+					writeFileRec(litFileForHtmlRpt, html.heading1(e.getText()));
+					writeFileRec(litFileForHtmlRpt, html.horizontalLine());
+					writeFileRec(litFileForHtmlRpt, html.paragraph("default", "&nbsp;"));
+				}
+				if(e.getName().equals("ReportFooter")) {
+			    String footer = e.getText();
+			    bFooter = footer.toUpperCase().equals("TRUE") ? true : false;
+				}
+			}//end while
+		} catch (Exception e){
+			System.out.println("**** E R R O R ***** parsing SqlProcessor Tag");
+			e.printStackTrace();
+			throw e;
+		}
+	}
+	/*
+	 * Insert the method's description here.
+	 * Creation date: (7/18/2002 12:58:31 PM)
+	 */
+	public void printResultSet(ResultSet rs) throws SQLException, Exception {
+		ResultSetMetaData rsmd = rs.getMetaData();
+		String text = "";
+
+		try {
+			
+			if (!bStarted) {
+				bStarted = true;
+				writeFileRec(litFileForHtmlRpt, html.startTable());			
+				//	print column headings
+				for (int i = 1; i <= rsmd.getColumnCount(); i++) {	
+					text = new String(text + buildOutput(i, rsmd.getColumnLabel(i)));
+				}
+				writeFileRec(litFileForHtmlRpt, html.tableRow("blue", "|", text));
+			}
+
+			if (!rs.next()) {
+				noRowCnt++;
+			} else {
+				do {
+					Vector vRow = getValue(rs, rsmd);
+					Enumeration enum = vRow.elements();
+					int i = 0;
+					text = "";
+					while (enum.hasMoreElements()){
+						i++;
+						String element = (String) enum.nextElement();
+						text = new String(text + buildOutput(i, element));
+					}// end while
+					writeFileRec(litFileForHtmlRpt, html.tableRow("default", "|", text));
+					vRow.removeAllElements();
+					rowCnt++;
+				} while (rs.next());
+			}
+			
+		} catch (Exception e) {
+			writeFileRec(litFileForHtmlRpt, html.endTable());
+			batchreport.writeDetailRec("****  ERROR in printResultSet  ****");
+			throw e;
+		}		
+	}
+	/*
+	 * Insert the method's description here.
+	 * Creation date: (11/26/2002 2:59:26 PM)
+	 */
+	public void fileResultSet(ResultSet rs, String fileName, String delimiter) throws SQLException, Exception {
+		ResultSetMetaData rsmd = rs.getMetaData();
+		String text = "";
+
+		try {
+			if (!rs.next()) {
+				noRowCnt++;
+			} else {
+				do {
+					Vector vRow = getValue(rs, rsmd);
+					Enumeration enum = vRow.elements();
+					int i = 0;
+					text = "";
+					while (enum.hasMoreElements()){
+						i++;
+						String element = (String) enum.nextElement();
+						text = new String(text + buildOutput(i, element, delimiter));
+					}// end while
+					writeFileRec(fileName, text);
+					vRow.removeAllElements();
+					rowCnt++;
+				} while (rs.next());
+			}
+			
+		} catch (Exception e) {
+			batchreport.writeDetailRec("****  ERROR in fileResultSet  ****");
+			throw e;
+		}		
+	}
+	/*
+	 * Insert the method's description here.
+	 * Creation date: (7/18/2002 5:11:37 PM)
+	 */
+	public Vector getValue(ResultSet rs, ResultSetMetaData rsmd) throws SQLException, Exception {
+		Vector currentRow = new Vector (100,300);
+
+		try {
+			for (int i = 1; i <= rsmd.getColumnCount(); ++i)
+				switch (rsmd.getColumnType(i)) {
+					case Types.VARCHAR:
+					case Types.CHAR:
+					case Types.LONGVARCHAR:
+					case Types.CLOB:
+						currentRow.addElement(rs.getString(i));
+						break;
+					case Types.INTEGER:
+					case Types.SMALLINT:
+						currentRow.addElement(new Integer(rs.getInt(i)).toString());
+						break;
+					case Types.DECIMAL:
+					case Types.DOUBLE:
+					case Types.FLOAT:
+						currentRow.addElement(new Double(rs.getDouble(i)).toString());
+						break;
+					case Types.DATE:
+						currentRow.addElement(rs.getDate(i) == null ? null : (rs.getDate(i)).toString());
+						break;
+					case Types.TIME:
+						currentRow.addElement(rs.getTime(i) == null ? null : (rs.getTime(i)).toString());
+						break;
+					case Types.TIMESTAMP:
+						currentRow.addElement(rs.getTimestamp(i) == null ? null : (rs.getTimestamp(i)).toString());
+						break;
+					default:
+						currentRow.addElement("Unknown Type");
+						batchreport.writeDetailRec("Type was:  "+ rsmd.getColumnTypeName(i));
+				}
+			return currentRow;
+		} catch (SQLException sqle) {
+			batchreport.writeDetailRec("****  ERROR in getValue  ****");
+			throw sqle;
+		} catch (Exception e) {
+			batchreport.writeDetailRec("****  ERROR in getValue  ****");
+			throw e;
+		}
+	}
+	/*
+	 * Insert the method's description here.
+	 * Creation date: (7/18/2002 4:45:20 PM)
+	 */
+	public String buildOutput(int i, String text) {
+		if (text == null)
+			text = "null";
+		if (text.trim().length() == 0)
+			text = "-";
+		text = new String(stripLf(text));
+		return i == 1 ? text : (new String("|" + text));
+	}
+	/*
+	 * Insert the method's description here.
+	 * Creation date: (11/26/2002 3:13:44 PM)
+	 */
+	public String buildOutput(int i, String text, String delimiter) {
+		if (text == null)
+			text = "";
+		text = new String(stripLf(text));
+		return i == 1 ? text : (new String(delimiter + text));
+	}
+	/*
+	 * Insert the method's description here.
+	 * Creation date: (1/22/2003 2:21:42 PM)
+	 */
+	public String stripLf(String raw) {
+		char space = ' ';
+		char nl = '\n';
+		char cr = '\r';
+
+		raw = new String(raw.replace(nl, space));
+		raw = new String(raw.replace(cr, space));
+
+		return raw;
+	}
+
+}
